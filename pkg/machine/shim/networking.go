@@ -1,6 +1,7 @@
 package shim
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -151,10 +152,15 @@ func conductVMReadinessCheck(mc *vmconfigs.MachineConfig, maxBackoffs int, backo
 		// CoreOS users have reported the same observation but
 		// the underlying source of the issue remains unknown.
 
-		if sshError = machine.LocalhostSSHSilent(mc.SSH.RemoteUsername, mc.SSH.IdentityPath, mc.Name, mc.SSH.Port, []string{"true"}); sshError != nil {
+		// Use a timeout context for the SSH readiness check to prevent indefinite blocking
+		// when the SSH server hangs (e.g., due to interoperability issues like OpenSSH 10.2p1)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if sshError = machine.LocalhostSSHWithCtx(ctx, mc.SSH.RemoteUsername, mc.SSH.IdentityPath, mc.Name, mc.SSH.Port, []string{"true"}); sshError != nil {
+			cancel()
 			logrus.Debugf("SSH readiness check for machine failed: %v", sshError)
 			continue
 		}
+		cancel()
 		connected = true
 		sshError = nil
 		break
