@@ -446,7 +446,7 @@ var _ = Describe("podman machine start", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		// Verify Starting is false in the persisted config
-		Expect(config["Starting"]).To(Equal(false))
+		Expect(config["Starting"]).To(BeFalse())
 
 		// Set Starting=true to simulate stale persisted state
 		config["Starting"] = true
@@ -483,7 +483,7 @@ var _ = Describe("podman machine start", func() {
 		var config2 map[string]any
 		err = jsoniter.Unmarshal(configContent2, &config2)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(config2["Starting"]).To(Equal(false))
+		Expect(config2["Starting"]).To(BeFalse())
 
 		// Clean up
 		stop := new(stopMachine)
