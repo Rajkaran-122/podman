@@ -126,7 +126,7 @@ func localhostBuiltinSSHWithCtx(ctx context.Context, username, identityPath, nam
 		case <-ctx.Done():
 			// Context cancelled - close session to unblock the goroutine
 			session.Close()
-			return fmt.Errorf("ssh command %q on machine %q cancelled: %v", cmd, name, ctx.Err())
+			return fmt.Errorf("ssh command %q on machine %q cancelled: %w", cmd, name, ctx.Err())
 		}
 	}
 
