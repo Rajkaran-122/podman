@@ -553,6 +553,23 @@ func Start(mc *vmconfigs.MachineConfig, mp vmconfigs.VMProvider, opts machine.St
 	return err
 }
 
+// recoverStaleStartingState clears a stale Starting=true flag when the machine
+// is actually stopped. This recovers from hard process termination (SIGKILL)
+// where deferred cleanup cannot execute. It only clears Starting when the provider
+// successfully reports the machine is Stopped, preserving it for Running,
+// Starting, Unknown, and error cases to respect provider state semantics.
+func recoverStaleStartingState(mc *vmconfigs.MachineConfig, mp vmconfigs.VMProvider) {
+	if mc.Starting {
+		state, err := mp.State(mc, false)
+		if err == nil && state == machineDefine.Stopped {
+			mc.Starting = false
+			if writeErr := mc.Write(); writeErr != nil {
+				logrus.Warnf("Failed to clear stale Starting state: %v", writeErr)
+			}
+		}
+	}
+}
+
 // startLocked starts the machine and expects the caller to hold the machine's lock.
 func startLocked(mc *vmconfigs.MachineConfig, mp vmconfigs.VMProvider, dirs *machineDefine.MachineDirs, opts machine.StartOptions, updateSystemConn *bool, callbackFuncs *machine.CleanupCallback) error {
 	var updateDefaultConnection bool
@@ -571,15 +588,7 @@ func startLocked(mc *vmconfigs.MachineConfig, mp vmconfigs.VMProvider, dirs *mac
 
 	// Fix incorrect starting state in case of crash during start
 	// (e.g., hard process termination where deferred cleanup cannot execute)
-	if mc.Starting {
-		state, err := mp.State(mc, false)
-		if err == nil && state == machineDefine.Stopped {
-			mc.Starting = false
-			if writeErr := mc.Write(); writeErr != nil {
-				logrus.Warnf("Failed to clear stale Starting state: %v", writeErr)
-			}
-		}
-	}
+	recoverStaleStartingState(mc, mp)
 
 	// Don't check if provider supports parallel running machines
 	if mp.RequireExclusiveActive() {

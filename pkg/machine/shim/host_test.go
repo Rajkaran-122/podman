@@ -122,7 +122,7 @@ func (m *mockProvider) IsRunning() bool {
 }
 
 func (m *mockProvider) VMType() define.VMType {
-	return define.QEMU
+	return define.QemuVirt
 }
 
 func (m *mockProvider) RequireExclusiveActive() bool {
@@ -137,106 +137,123 @@ func (m *mockProvider) UserModeNetworkEnabled(_ *vmconfigs.MachineConfig) bool {
 	return false
 }
 
+// mockWriteCounter tracks how many times mc.Write() is called
+type mockWriteCounter struct {
+	writeCount int
+}
+
+func (m *mockWriteCounter) Write() error {
+	m.writeCount++
+	return nil
+}
+
+// mockMachineConfig wraps MachineConfig to intercept Write() calls
+type mockMachineConfig struct {
+	*vmconfigs.MachineConfig
+	writeCounter *mockWriteCounter
+}
+
+func (m *mockMachineConfig) Write() error {
+	if m.writeCounter != nil {
+		return m.writeCounter.Write()
+	}
+	return m.MachineConfig.Write()
+}
+
 func Test_StaleStartingStateRecovery(t *testing.T) {
 	t.Run("Starting=true + State=Stopped clears Starting", func(t *testing.T) {
-		mc := &vmconfigs.MachineConfig{
-			Starting: true,
+		writeCounter := &mockWriteCounter{}
+		mc := &mockMachineConfig{
+			MachineConfig: &vmconfigs.MachineConfig{
+				Starting: true,
+			},
+			writeCounter: writeCounter,
 		}
 		mp := &mockProvider{state: define.Stopped}
 
-		// Simulate the recovery logic from startLocked
-		if mc.Starting {
-			state, err := mp.State(mc, false)
-			if err == nil && state == define.Stopped {
-				mc.Starting = false
-			}
-		}
+		recoverStaleStartingState(mc.MachineConfig, mp)
 
 		assert.False(t, mc.Starting, "Starting should be cleared when machine is stopped")
+		assert.Equal(t, 1, writeCounter.writeCount, "mc.Write() should be called once to persist the change")
 	})
 
 	t.Run("Starting=true + State=Running preserves Starting", func(t *testing.T) {
-		mc := &vmconfigs.MachineConfig{
-			Starting: true,
+		writeCounter := &mockWriteCounter{}
+		mc := &mockMachineConfig{
+			MachineConfig: &vmconfigs.MachineConfig{
+				Starting: true,
+			},
+			writeCounter: writeCounter,
 		}
 		mp := &mockProvider{state: define.Running}
 
-		// Simulate the recovery logic from startLocked
-		if mc.Starting {
-			state, err := mp.State(mc, false)
-			if err == nil && state == define.Stopped {
-				mc.Starting = false
-			}
-		}
+		recoverStaleStartingState(mc.MachineConfig, mp)
 
 		assert.True(t, mc.Starting, "Starting should be preserved when machine is running")
+		assert.Equal(t, 0, writeCounter.writeCount, "mc.Write() should not be called when Starting is preserved")
 	})
 
 	t.Run("Starting=true + State=Starting preserves Starting", func(t *testing.T) {
-		mc := &vmconfigs.MachineConfig{
-			Starting: true,
+		writeCounter := &mockWriteCounter{}
+		mc := &mockMachineConfig{
+			MachineConfig: &vmconfigs.MachineConfig{
+				Starting: true,
+			},
+			writeCounter: writeCounter,
 		}
 		mp := &mockProvider{state: define.Starting}
 
-		// Simulate the recovery logic from startLocked
-		if mc.Starting {
-			state, err := mp.State(mc, false)
-			if err == nil && state == define.Stopped {
-				mc.Starting = false
-			}
-		}
+		recoverStaleStartingState(mc.MachineConfig, mp)
 
 		assert.True(t, mc.Starting, "Starting should be preserved when provider reports Starting")
+		assert.Equal(t, 0, writeCounter.writeCount, "mc.Write() should not be called when Starting is preserved")
 	})
 
 	t.Run("Starting=true + State=Unknown preserves Starting", func(t *testing.T) {
-		mc := &vmconfigs.MachineConfig{
-			Starting: true,
+		writeCounter := &mockWriteCounter{}
+		mc := &mockMachineConfig{
+			MachineConfig: &vmconfigs.MachineConfig{
+				Starting: true,
+			},
+			writeCounter: writeCounter,
 		}
 		mp := &mockProvider{state: define.Unknown}
 
-		// Simulate the recovery logic from startLocked
-		if mc.Starting {
-			state, err := mp.State(mc, false)
-			if err == nil && state == define.Stopped {
-				mc.Starting = false
-			}
-		}
+		recoverStaleStartingState(mc.MachineConfig, mp)
 
 		assert.True(t, mc.Starting, "Starting should be preserved when provider reports Unknown")
+		assert.Equal(t, 0, writeCounter.writeCount, "mc.Write() should not be called when Starting is preserved")
 	})
 
 	t.Run("Starting=true + State() error preserves Starting", func(t *testing.T) {
-		mc := &vmconfigs.MachineConfig{
-			Starting: true,
+		writeCounter := &mockWriteCounter{}
+		mc := &mockMachineConfig{
+			MachineConfig: &vmconfigs.MachineConfig{
+				Starting: true,
+			},
+			writeCounter: writeCounter,
 		}
 		mp := &mockProvider{state: define.Stopped, err: assert.AnError}
 
-		// Simulate the recovery logic from startLocked
-		if mc.Starting {
-			state, err := mp.State(mc, false)
-			if err == nil && state == define.Stopped {
-				mc.Starting = false
-			}
-		}
+		recoverStaleStartingState(mc.MachineConfig, mp)
 
 		assert.True(t, mc.Starting, "Starting should be preserved when State() returns an error")
+		assert.Equal(t, 0, writeCounter.writeCount, "mc.Write() should not be called when State() errors")
 	})
 
 	t.Run("Starting=false remains false", func(t *testing.T) {
-		mc := &vmconfigs.MachineConfig{
-			Starting: false,
+		writeCounter := &mockWriteCounter{}
+		mc := &mockMachineConfig{
+			MachineConfig: &vmconfigs.MachineConfig{
+				Starting: false,
+			},
+			writeCounter: writeCounter,
 		}
 		mp := &mockProvider{state: define.Stopped}
 
-		// Simulate the recovery logic from startLocked
-		if mc.Starting {
-			state, err := mp.State(mc, false)
-			if err == nil && state == define.Stopped {
-				mc.Starting = false
-			}
-		}
+		recoverStaleStartingState(mc.MachineConfig, mp)
 
 		assert.False(t, mc.Starting, "Starting should remain false when already false")
+		assert.Equal(t, 0, writeCounter.writeCount, "mc.Write() should not be called when Starting is already false")
 	})
 }
