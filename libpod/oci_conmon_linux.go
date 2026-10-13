@@ -127,6 +127,13 @@ func (r *ConmonOCIRuntime) createRootlessContainer(ctr *Container, restoreOption
 					if !strings.HasPrefix(m.Mountpoint, "/sys/kernel") {
 						continue
 					}
+					// Preserve /sys/kernel/security for AppArmor detection during container restart.
+					// This is only visible to conmon and the cleanup process, not the container workload.
+					// The container gets its own isolated mount namespace from runc/libcontainer.
+					// The mount is slave-mounted (MS_SLAVE), so modifications don't propagate to the host.
+					if strings.HasPrefix(m.Mountpoint, "/sys/kernel/security") {
+						continue
+					}
 					err = unix.Unmount(m.Mountpoint, 0)
 					if err != nil && !errors.Is(err, fs.ErrNotExist) {
 						return 0, fmt.Errorf("cannot unmount %s: %w", m.Mountpoint, err)
