@@ -952,6 +952,34 @@ func IsTemplateUnitFileName(fileName string) bool {
 	return strings.HasSuffix(base, "@")
 }
 
+// Extract the instance name from a template unit filename.
+// For example, "test@instance1.container" returns "instance1".
+// Returns empty string if the filename is not an instantiated template.
+func extractInstanceName(fileName string) string {
+	base := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	atIndex := strings.Index(base, "@")
+	if atIndex == -1 || atIndex == len(base)-1 {
+		return ""
+	}
+	return base[atIndex+1:]
+}
+
+// Generate the instance filename from a template.
+// If instanceName is provided, generates "template@instance.extension".
+// If instanceName is empty, generates "template@.extension" (uninstantiated template).
+func generateInstanceName(templateName string, instanceName string) string {
+	ext := filepath.Ext(templateName)
+	base := strings.TrimSuffix(templateName, ext)
+	// Remove the trailing @ if present (template format)
+	if strings.HasSuffix(base, "@") {
+		base = base[:len(base)-1]
+	}
+	if instanceName != "" {
+		return fmt.Sprintf("%s@%s%s", base, instanceName, ext)
+	}
+	return fmt.Sprintf("%s@%s", base, ext)
+}
+
 // Get the unresolved container name that may contain '%'.
 func getContainerName(container *parser.UnitFile) string {
 	containerName, ok := container.Lookup(ContainerGroup, KeyContainerName)
@@ -2348,14 +2376,23 @@ func translateUnitDependencies(serviceUnitFile *parser.UnitFile, unitsInfoMap ma
 				unitInfo, ok := unitsInfoMap[dep]
 				if !ok {
 					// For template units not in unitsInfoMap (e.g., rootful templates
-					// referenced by rootless units), compute the service name from the filename.
-					// Template units only need the service name for dependency translation.
-					if strings.Contains(dep, "@") {
-						serviceName, err := GetUnitServiceName(&parser.UnitFile{Filename: dep})
-						if err != nil {
-							return fmt.Errorf("unable to translate dependency for %s: %w", dep, err)
+					// referenced by rootless units), generate the instance name from the template
+					// following systemd's behavior, then check if that instance exists.
+					// Only propagate the instance name if the dependency is an uninstantiated template.
+					if IsTemplateUnitFileName(dep) {
+						// Extract instance name from current unit if it's a template
+						instanceName := ""
+						if strings.Contains(serviceUnitFile.Filename, "@") {
+							instanceName = extractInstanceName(serviceUnitFile.Filename)
 						}
-						translatedDep = fmt.Sprintf("%s.service", serviceName)
+						// Generate the instance filename
+						instanceDep := generateInstanceName(dep, instanceName)
+						// Check if the generated instance exists in unitsInfoMap
+						unitInfo, ok = unitsInfoMap[instanceDep]
+						if !ok {
+							return fmt.Errorf("unable to translate dependency for %s: instance %s not found (symlink template to instance in unit directory)", dep, instanceDep)
+						}
+						translatedDep = unitInfo.ServiceFileName()
 						translated = true
 					} else {
 						return fmt.Errorf("unable to translate dependency for %s", dep)
