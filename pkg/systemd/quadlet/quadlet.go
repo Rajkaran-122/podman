@@ -971,9 +971,7 @@ func generateInstanceName(templateName string, instanceName string) string {
 	ext := filepath.Ext(templateName)
 	base := strings.TrimSuffix(templateName, ext)
 	// Remove the trailing @ if present (template format)
-	if strings.HasSuffix(base, "@") {
-		base = base[:len(base)-1]
-	}
+	base = strings.TrimSuffix(base, "@")
 	if instanceName != "" {
 		return fmt.Sprintf("%s@%s%s", base, instanceName, ext)
 	}
