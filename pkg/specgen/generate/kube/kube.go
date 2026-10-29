@@ -39,6 +39,7 @@ import (
 	"go.podman.io/podman/v6/pkg/k8s.io/apimachinery/pkg/util/intstr"
 	"go.podman.io/podman/v6/pkg/specgen"
 	"go.podman.io/podman/v6/pkg/specgen/generate"
+	"go.podman.io/podman/v6/pkg/specgenutil"
 	systemdDefine "go.podman.io/podman/v6/pkg/systemd/define"
 	"go.podman.io/podman/v6/pkg/util"
 	"go.podman.io/storage/pkg/system"
@@ -438,6 +439,16 @@ func ToSpecGen(ctx context.Context, opts *CtrSpecGenOptions) (*specgen.SpecGener
 			s.ResourceLimits.CPU = &spec.LinuxCPU{}
 		}
 		s.ResourceLimits.CPU.Mems = memNodes
+	}
+
+	if deviceCgroupRules, ok := annotations[define.DeviceCgroupRuleAnnotation+"/"+opts.Container.Name]; ok {
+		for rule := range strings.SplitSeq(deviceCgroupRules, ",") {
+			parsed, err := specgenutil.ParseLinuxResourcesDeviceAccess(rule)
+			if err != nil {
+				return nil, fmt.Errorf("invalid device cgroup rule %q: %w", rule, err)
+			}
+			s.DeviceCgroupRule = append(s.DeviceCgroupRule, parsed)
+		}
 	}
 
 	if label, ok := opts.Annotations[define.InspectAnnotationLabel+"/"+opts.Container.Name]; ok {

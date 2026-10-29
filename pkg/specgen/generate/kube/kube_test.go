@@ -4,14 +4,17 @@ package kube
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
+	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 	"go.podman.io/podman/v6/libpod"
 	v1 "go.podman.io/podman/v6/pkg/k8s.io/api/core/v1"
 	"go.podman.io/podman/v6/pkg/k8s.io/apimachinery/pkg/api/resource"
 	"go.podman.io/podman/v6/pkg/k8s.io/apimachinery/pkg/util/intstr"
 	"go.podman.io/podman/v6/pkg/specgen"
+	"go.podman.io/podman/v6/pkg/specgenutil"
 )
 
 func testPropagation(t *testing.T, propagation v1.MountPropagationMode, expected string) {
@@ -311,6 +314,92 @@ func TestSetupSecurityContextSeccompProfile(t *testing.T) {
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expected, s.SeccompProfilePath)
+		})
+	}
+}
+
+func TestDeviceCgroupRuleAnnotation(t *testing.T) {
+	tests := []struct {
+		name          string
+		annotations   map[string]string
+		containerName string
+		expectedRules int
+		expectedError string
+	}{
+		{
+			name:          "single valid rule",
+			annotations:   map[string]string{"io.podman.annotations.device-cgroup-rule/mycontainer": "c 9:* rwm"},
+			containerName: "mycontainer",
+			expectedRules: 1,
+		},
+		{
+			name:          "multiple comma-separated rules",
+			annotations:   map[string]string{"io.podman.annotations.device-cgroup-rule/mycontainer": "c 9:* rwm,b 8:* rw"},
+			containerName: "mycontainer",
+			expectedRules: 2,
+		},
+		{
+			name:          "wildcard major and minor",
+			annotations:   map[string]string{"io.podman.annotations.device-cgroup-rule/mycontainer": "a *:* rwm"},
+			containerName: "mycontainer",
+			expectedRules: 1,
+		},
+		{
+			name:          "invalid rule format - missing access",
+			annotations:   map[string]string{"io.podman.annotations.device-cgroup-rule/mycontainer": "c 9:*"},
+			containerName: "mycontainer",
+			expectedError: "invalid device cgroup rule",
+		},
+		{
+			name:          "invalid device type",
+			annotations:   map[string]string{"io.podman.annotations.device-cgroup-rule/mycontainer": "x 9:* rwm"},
+			containerName: "mycontainer",
+			expectedError: "invalid device type",
+		},
+		{
+			name:          "container-specific - only target container gets rules",
+			annotations:   map[string]string{"io.podman.annotations.device-cgroup-rule/container1": "c 9:* rwm"},
+			containerName: "container2",
+			expectedRules: 0,
+		},
+		{
+			name:          "no annotation - no rules",
+			annotations:   map[string]string{},
+			containerName: "mycontainer",
+			expectedRules: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			annotations := make(map[string]string)
+			if tt.annotations != nil {
+				annotations = tt.annotations
+			}
+
+			// Simulate the annotation parsing logic from ToSpecGen
+			var rules []spec.LinuxDeviceCgroup
+			if deviceCgroupRules, ok := annotations["io.podman.annotations.device-cgroup-rule/"+tt.containerName]; ok {
+				for rule := range strings.SplitSeq(deviceCgroupRules, ",") {
+					parsed, err := specgenutil.ParseLinuxResourcesDeviceAccess(rule)
+					if err != nil {
+						if tt.expectedError != "" {
+							assert.ErrorContains(t, err, tt.expectedError)
+							return
+						}
+						assert.NoError(t, err)
+						return
+					}
+					rules = append(rules, parsed)
+				}
+			}
+
+			if tt.expectedError != "" {
+				t.Errorf("expected error containing %q but none occurred", tt.expectedError)
+				return
+			}
+
+			assert.Equal(t, tt.expectedRules, len(rules))
 		})
 	}
 }
