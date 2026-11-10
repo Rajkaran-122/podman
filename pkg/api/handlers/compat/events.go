@@ -4,7 +4,10 @@ package compat
 
 import (
 	"fmt"
+	"mime"
 	"net/http"
+	"strconv"
+	"strings"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/sirupsen/logrus"
@@ -16,6 +19,111 @@ import (
 	"go.podman.io/podman/v6/pkg/domain/entities"
 	"go.podman.io/podman/v6/pkg/util"
 )
+
+// eventsMediaTypes lists the media types supported for the Docker-compatible
+// events stream, in server preference order for equal-quality matches.
+var eventsMediaTypes = []string{
+	"application/json",
+	"application/jsonl",
+	"application/x-ndjson",
+	"application/json-seq",
+}
+
+// eventsJSONSeqRecordSeparator is the RFC 7464 record separator that prefixes
+// every record of an application/json-seq stream.
+const eventsJSONSeqRecordSeparator = '\x1e'
+
+// acceptSpec is a single parsed media range from an Accept header.
+type acceptSpec struct {
+	mediaType   string
+	q           float64
+	specificity int // 2 = exact type, 1 = type/*, 0 = */*
+}
+
+// parseAcceptHeader parses an Accept header into media ranges.
+// Entries that cannot be parsed are skipped.
+func parseAcceptHeader(header string) []acceptSpec {
+	var specs []acceptSpec
+	for _, part := range strings.Split(header, ",") {
+		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+		if err != nil {
+			continue
+		}
+		q := 1.0
+		if qs, ok := params["q"]; ok {
+			if v, err := strconv.ParseFloat(qs, 64); err == nil {
+				q = v
+			}
+		}
+		specificity := 0
+		switch {
+		case mediaType == "*/*":
+			specificity = 0
+		case strings.HasSuffix(mediaType, "/*"):
+			specificity = 1
+		default:
+			specificity = 2
+		}
+		specs = append(specs, acceptSpec{mediaType: mediaType, q: q, specificity: specificity})
+	}
+	return specs
+}
+
+// mediaRangeMatches reports whether an Accept media range covers the given media type.
+func mediaRangeMatches(mediaRange, mediaType string) bool {
+	switch {
+	case mediaRange == "*/*" || mediaRange == mediaType:
+		return true
+	case strings.HasSuffix(mediaRange, "/*"):
+		return strings.HasPrefix(mediaType, strings.TrimSuffix(mediaRange, "*"))
+	default:
+		return false
+	}
+}
+
+// negotiateEventsContentType selects the response media type for the
+// Docker-compatible events stream based on the request's Accept header.
+// It returns "application/json" when no Accept header is present, when nothing
+// in the header is supported, or when all matching ranges have q=0, preserving
+// the historical default behavior.
+func negotiateEventsContentType(accept string) string {
+	if accept == "" {
+		return "application/json"
+	}
+	specs := parseAcceptHeader(accept)
+	if len(specs) == 0 {
+		return "application/json"
+	}
+
+	bestType := ""
+	bestQ := 0.0
+	for _, supported := range eventsMediaTypes {
+		// Per RFC 7231, the most specific matching media range determines
+		// the quality for a given media type.
+		q := -1.0
+		specificity := -1
+		for _, spec := range specs {
+			if !mediaRangeMatches(spec.mediaType, supported) {
+				continue
+			}
+			if spec.specificity > specificity || (spec.specificity == specificity && spec.q > q) {
+				q = spec.q
+				specificity = spec.specificity
+			}
+		}
+		if q <= 0 {
+			continue
+		}
+		if q > bestQ {
+			bestQ = q
+			bestType = supported
+		}
+	}
+	if bestType == "" {
+		return "application/json"
+	}
+	return bestType
+}
 
 // GetEvents endpoint serves both the docker-compatible one and the new libpod one
 func GetEvents(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +178,16 @@ func GetEvents(w http.ResponseWriter, r *http.Request) {
 		flush = flusher.Flush
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	// Docker-compatible requests negotiate the event stream media type via
+	// the Accept header (API v1.52+ for x-ndjson/json-seq, v1.53 for jsonl).
+	// Libpod requests keep the historical application/json response.
+	contentType := "application/json"
+	if !utils.IsLibpodRequest(r) {
+		contentType = negotiateEventsContentType(r.Header.Get("Accept"))
+	}
+	jsonSeq := contentType == "application/json-seq"
+
+	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(http.StatusOK)
 	flush()
 
@@ -114,6 +231,13 @@ func GetEvents(w http.ResponseWriter, r *http.Request) {
 				e.From = ""   //nolint:staticcheck // deprecated field, cleared for API >= 1.52
 			}
 
+			if jsonSeq {
+				// RFC 7464 JSON text sequences prefix every record with RS.
+				if _, err := w.Write([]byte{eventsJSONSeqRecordSeparator}); err != nil {
+					logrus.Errorf("Unable to write json-seq record separator: %q", err)
+					continue
+				}
+			}
 			if err := coder.Encode(e); err != nil {
 				logrus.Errorf("Unable to write json: %q", err)
 			}
